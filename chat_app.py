@@ -26,7 +26,7 @@ st.set_page_config(page_title="AIDA")
 
 # Get secrets
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
-ASSISTANT_ID = st.secrets["OPENAI_ASSISTANT_ID"]
+ASSISTANT_ID = st.secrets["ASSISTANT_ID"]
 
 # Initialise the OpenAI client, and retrieve the assistant
 client = OpenAI(api_key=OPENAI_API_KEY)
