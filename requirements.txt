@@ -1,7 +1,7 @@
-google==3.0.0
-google-auth==2.23.2
-google-auth-oauthlib==1.1.0
-googleapis-common-protos==1.62.0
-gspread==5.11.2
-openai==1.23.6
-streamlit==1.33.0
+google>=1.9.3
+google-auth>=2.29.0
+google-auth-oauthlib>=1.2.1
+googleapis-common-protos>=1.69.2
+gspread>=5.12.4
+openai>=1.68.2
+streamlit>=1.43.2

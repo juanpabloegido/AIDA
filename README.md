@@ -1,7 +1,13 @@
-# DAVE: Data Analysis & Visualisation Engine
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://dave-demo.streamlit.app/)
+# AIDA - Atida Intelligent Data Assistant
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://aida-demo.streamlit.app/)
 
-This Streamlit application analyses a given dataset with OpenAI's [Assistants API](https://platform.openai.com/docs/assistants/overview) with [Code Interpreter](https://platform.openai.com/docs/assistants/tools/code-interpreter). The Assistant's analysis, including the Python code the assistant will write & execute, will streamed to the app's user interface.
+AIDA is a specialized AI assistant for Atida pharmaceutical company, built using OpenAI's [Assistants API](https://platform.openai.com/docs/assistants/overview) with [Code Interpreter](https://platform.openai.com/docs/assistants/tools/code-interpreter). The assistant's analysis, including data processing, SQL queries, and visualizations, will be streamed to the app's user interface.
+
+Key capabilities:
+- Analyzing pharmaceutical data
+- Creating visualizations
+- Executing SQL queries
+- Searching and analyzing files
 
 <p align="center">
   <img src="demo/demo1.gif" alt="Demo 1" width="40%" style="border: 3px solid black;"/>
@@ -22,5 +28,5 @@ pip install -r requirements.txt
 5. Launch the application:
 
 ```python
-streamlit run demo_app.py
+streamlit run chat_app.py
 ```

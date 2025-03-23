@@ -3,6 +3,7 @@ chat_app.py
 """
 import base64
 import os
+import time
 
 import streamlit as st
 from openai import OpenAI
@@ -21,8 +22,7 @@ from openai.types.beta.threads.runs.code_interpreter_tool_call import (
     )
 
 # Set page config
-st.set_page_config(page_title="DAVE",
-                   layout='wide')
+st.set_page_config(page_title="AIDA")
 
 # Get secrets
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
@@ -67,7 +67,7 @@ def moderation_endpoint(text) -> bool:
     return response.results[0].flagged
 
 # UI
-st.subheader("🔮 DAVE: Data Analysis & Visualisation Engine")
+st.subheader("💊 AIDA - Atida Intelligent Data Assistant")
 file_upload_box = st.empty()
 upload_btn = st.empty()
 
@@ -187,7 +187,7 @@ if st.session_state["file_uploaded"]:
                 elif isinstance(event, ThreadRunStepCompleted):
                     if isinstance(event.data.step_details, ToolCallsStepDetails):
                         code_interpretor = event.data.step_details.tool_calls[0].code_interpreter
-                        if code_interpretor.outputs is not None:
+                        if code_interpretor.outputs and len(code_interpretor.outputs) > 0:
                             code_interpretor_outputs = code_interpretor.outputs[0]
                             code_input_expander.update(label="Code", state="complete", expanded=False)
                             # Image
