@@ -22,7 +22,8 @@ from openai.types.beta.threads.runs.code_interpreter_tool_call import (
     )
 
 # Set page config
-st.set_page_config(page_title="AIDA")
+st.set_page_config(page_title="AIDA - Atida Intelligent Data Assistant",
+                   page_icon="💊")
 
 # Get secrets
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
