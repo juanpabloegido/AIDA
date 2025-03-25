@@ -9,11 +9,6 @@ Key capabilities:
 - Executing SQL queries
 - Searching and analyzing files
 
-<p align="center">
-  <img src="demo/demo1.gif" alt="Demo 1" width="40%" style="border: 3px solid black;"/>
-  <img src="demo/demo2.gif" alt="Demo 2" width="40%" style="border: 3px solid black;"/>
-</p>
-
 ## Quick Start
 
 1. Clone this repository
