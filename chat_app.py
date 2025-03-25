@@ -353,11 +353,15 @@ def get_assistant_context():
 
     # Add selected files context
     if st.session_state.selected_files:
-        file_names = [
-            info["name"] for info in st.session_state.uploaded_files_info
-            if info["file_id"] in st.session_state.selected_files
-        ]
-        context.append("Selected Files:\n" + "\n".join([f"- {name}" for name in file_names]))
+        file_info = []
+        for info in st.session_state.uploaded_files_info:
+            if info["file_id"] in st.session_state.selected_files:
+                file_info.append(
+                    f"- {info['name']} (ID: {info['file_id']}, Type: {info['type']})\n"
+                    f"  Access path: /mnt/data/{info['file_id']}"
+                )
+        if file_info:
+            context.append("Selected Files:\n" + "\n".join(file_info))
 
     # Add selected tables context
     if st.session_state.selected_tables:
