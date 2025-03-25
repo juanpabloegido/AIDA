@@ -62,7 +62,7 @@ st.markdown("""
 # Initialize session state
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "¡Hola! Soy AIDA, tu asistente de datos. ¿En qué puedo ayudarte? 👋"}]
+        {"role": "assistant", "content": "Hi! I'm AIDA, your intelligent data assistant. How can I help you today? 👋"}]
 if "file_uploaded" not in st.session_state:
     st.session_state.file_uploaded = False
 if "thread_id" not in st.session_state:
@@ -298,7 +298,7 @@ with st.sidebar:
         st.session_state.selected_tables = selected_tables
 
     st.divider()
-    st.caption("Powered by Atida © 2024")
+    st.caption("Powered by Atida © 2025")
 
 # Main chat interface
 st.title("💊 AIDA - Atida Intelligent Data Assistant")
