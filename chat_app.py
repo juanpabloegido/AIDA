@@ -77,13 +77,6 @@ if "selected_files" not in st.session_state:
     st.session_state.selected_files = []
 if "selected_tables" not in st.session_state:
     st.session_state.selected_tables = []
-if "visualization_settings" not in st.session_state:
-    st.session_state.visualization_settings = {
-        "default_chart": "line",
-        "theme": "simple_white",
-        "colors": ["#2e4d7b", "#4CAF50", "#FFC107", "#9C27B0"]
-    }
-
 
 # BigQuery Explorer Class
 class BigQueryExplorer:
@@ -304,25 +297,6 @@ with st.sidebar:
 
         st.session_state.selected_tables = selected_tables
 
-    # Visualization Settings
-    st.markdown("### 🎨 Visualization Settings")
-    with st.expander("Chart Settings"):
-        st.session_state.visualization_settings["default_chart"] = st.selectbox(
-            "Default Chart Type",
-            ["line", "bar", "area", "scatter", "plotly"],
-            index=["line", "bar", "area", "scatter", "plotly"].index(
-                st.session_state.visualization_settings["default_chart"]
-            )
-        )
-
-        st.session_state.visualization_settings["theme"] = st.selectbox(
-            "Chart Theme",
-            ["simple_white", "plotly_dark", "plotly_white"],
-            index=["simple_white", "plotly_dark", "plotly_white"].index(
-                st.session_state.visualization_settings["theme"]
-            )
-        )
-
     st.divider()
     st.caption("Powered by Atida © 2024")
 
@@ -382,68 +356,17 @@ def get_assistant_context():
 
 
 # Function to create visualization based on dataframe
-def create_visualization(df, chart_type=None, x=None, y=None, **kwargs):
+def display_dataframe(df, title="Results"):
+    """Display a dataframe in a consistent format"""
     if isinstance(df, str):
         st.error(df)
         return
 
     try:
-        # Use default settings if not specified
-        chart_type = chart_type or st.session_state.visualization_settings["default_chart"]
-        theme = st.session_state.visualization_settings["theme"]
-        colors = st.session_state.visualization_settings["colors"]
-
-        # Convert y to list if it's not
-        y = [y] if isinstance(y, str) else y
-
-        # Create a copy of the dataframe with only the columns we need
-        plot_df = df[[x] + y].copy() if x else df[y].copy()
-
-        if chart_type == 'line':
-            st.line_chart(
-                plot_df,
-                x=x,
-                y=y,
-                use_container_width=True
-            )
-        elif chart_type == 'bar':
-            st.bar_chart(
-                plot_df,
-                x=x,
-                y=y,
-                use_container_width=True
-            )
-        elif chart_type == 'area':
-            st.area_chart(
-                plot_df,
-                x=x,
-                y=y,
-                use_container_width=True
-            )
-        elif chart_type == 'scatter':
-            st.scatter_chart(
-                plot_df,
-                x=x,
-                y=y,
-                use_container_width=True
-            )
-        elif chart_type == 'plotly':
-            fig = px.line(
-                plot_df,
-                x=x,
-                y=y,
-                template=theme,
-                color_discrete_sequence=colors,
-                **kwargs
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning(f"Chart type {chart_type} not supported")
-            st.dataframe(plot_df)
-
+        st.markdown(f"#### {title}")
+        st.dataframe(df, use_container_width=True)
     except Exception as e:
-        st.error(f"Error creating visualization: {str(e)}")
-        st.dataframe(df)
+        st.error(f"Error displaying dataframe: {str(e)}")
 
 
 # Function to execute BigQuery
@@ -451,29 +374,7 @@ def execute_query(query, show_results=True):
     try:
         df = bq_client.query(query).to_dataframe()
         if show_results:
-            st.markdown("#### Query Results")
-            st.dataframe(df, use_container_width=True)
-
-            # Show visualization options if data is present
-            if not df.empty:
-                with st.expander("📊 Visualization Options"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        chart_type = st.selectbox(
-                            "Chart Type",
-                            ["table", "line", "bar", "area", "scatter", "plotly"]
-                        )
-                        x_col = st.selectbox("X Axis", df.columns.tolist())
-                    with col2:
-                        y_cols = st.multiselect("Y Axis", df.columns.tolist())
-
-                    if chart_type and x_col and y_cols:
-                        create_visualization(
-                            df,
-                            chart_type=chart_type,
-                            x=x_col,
-                            y=y_cols
-                        )
+            display_dataframe(df, "Query Results")
         return df
     except Exception as e:
         st.error(f"Error executing query: {str(e)}")
@@ -626,30 +527,7 @@ if prompt := st.chat_input("Ask me about your data..."):
                         st.code(sql_query, language="sql", line_numbers=True)
 
                     # Display results
-                    st.markdown("#### Query Results")
-                    st.dataframe(df, use_container_width=True)
-
-                    # Show visualization options if data is present
-                    if not df.empty:
-                        with st.expander("📊 Visualization Options"):
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                chart_type = st.selectbox(
-                                    "Chart Type",
-                                    ["table", "line", "bar", "area", "scatter", "plotly"]
-                                )
-                                x_col = st.selectbox("X Axis", df.columns.tolist())
-                            with col2:
-                                y_cols = st.multiselect("Y Axis", df.columns.tolist())
-
-                            if chart_type and x_col and y_cols:
-                                create_visualization(
-                                    df,
-                                    chart_type=chart_type,
-                                    x=x_col,
-                                    y=y_cols
-                                )
-
+                    display_dataframe(df, "Query Results")
                     response_content = [{"type": "text", "content": "✅ Query executed successfully!"}]
                     sql_success = True
 
@@ -758,36 +636,7 @@ if prompt := st.chat_input("Ask me about your data..."):
                                             try:
                                                 if "," in output.logs and "\n" in output.logs:
                                                     df = pd.read_csv(io.StringIO(output.logs))
-                                                    st.dataframe(df, use_container_width=True)
-
-                                                    # Offer visualization options
-                                                    with st.expander("📊 Visualization Options"):
-                                                        col1, col2 = st.columns(2)
-                                                        with col1:
-                                                            chart_type = st.selectbox(
-                                                                "Chart Type",
-                                                                ["table", "line", "bar", "area", "scatter", "plotly"],
-                                                                key=f"chart_type_{len(response_content)}"
-                                                            )
-                                                            x_col = st.selectbox(
-                                                                "X Axis",
-                                                                df.columns.tolist(),
-                                                                key=f"x_col_{len(response_content)}"
-                                                            )
-                                                        with col2:
-                                                            y_cols = st.multiselect(
-                                                                "Y Axis",
-                                                                df.columns.tolist(),
-                                                                key=f"y_cols_{len(response_content)}"
-                                                            )
-
-                                                        if chart_type and x_col and y_cols:
-                                                            create_visualization(
-                                                                df,
-                                                                chart_type=chart_type,
-                                                                x=x_col,
-                                                                y=y_cols
-                                                            )
+                                                    display_dataframe(df, "Data Preview")
                                             except:
                                                 pass  # Not tabular data
 
