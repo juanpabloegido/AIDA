@@ -1,240 +1,684 @@
-"""
-chat_app.py
-"""
 import base64
 import os
 import time
+from datetime import datetime
+import logging
+import json
+from contextlib import redirect_stdout
+import io
 
 import streamlit as st
 from openai import OpenAI
+import pandas as pd
+import plotly.express as px
+from google.cloud import bigquery
+from google.oauth2 import service_account
 from openai.types.beta.assistant_stream_event import (
     ThreadRunStepCreated,
     ThreadRunStepDelta,
     ThreadRunStepCompleted,
     ThreadMessageCreated,
     ThreadMessageDelta
-    )
-from openai.types.beta.threads.text_delta_block import TextDeltaBlock 
+)
+from openai.types.beta.threads.text_delta_block import TextDeltaBlock
 from openai.types.beta.threads.runs.tool_calls_step_details import ToolCallsStepDetails
 from openai.types.beta.threads.runs.code_interpreter_tool_call import (
     CodeInterpreterOutputImage,
     CodeInterpreterOutputLogs
-    )
+)
 
-# Set page config
-st.set_page_config(page_title="AIDA - Atida Intelligent Data Assistant",
-                   page_icon="💊")
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("AIDA")
 
-# Get secrets
-OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
-ASSISTANT_ID = st.secrets["ASSISTANT_ID"]
+# Set page configuration
+st.set_page_config(
+    page_title="AIDA - Atida Intelligent Data Assistant",
+    page_icon="💊",
+    layout="wide"
+)
 
-# Initialise the OpenAI client, and retrieve the assistant
-client = OpenAI(api_key=OPENAI_API_KEY)
-assistant = client.beta.assistants.retrieve(ASSISTANT_ID)
+# Custom CSS
+st.markdown("""
+    <style>
+    .main {
+        background-color: #f5f7f9;
+    }
+    .stTitle {
+        color: #2e4d7b;
+    }
+    #MainMenu {visibility: hidden}
+    #header {visibility: hidden}
+    #footer {visibility: hidden}
+    .block-container {
+        padding-top: 3rem;
+        padding-bottom: 2rem;
+        padding-left: 3rem;
+        padding-right: 3rem;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-# Apply custom CSS
-st.html("""
-        <style>
-            #MainMenu {visibility: hidden}
-            #header {visibility: hidden}
-            #footer {visibility: hidden}
-            .block-container {
-                padding-top: 3rem;
-                padding-bottom: 2rem;
-                padding-left: 3rem;
-                padding-right: 3rem;
+# Initialize session state
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "assistant", "content": "¡Hola! Soy AIDA, tu asistente de datos. ¿En qué puedo ayudarte? 👋"}]
+if "file_uploaded" not in st.session_state:
+    st.session_state.file_uploaded = False
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = None
+if "uploaded_files_info" not in st.session_state:
+    st.session_state.uploaded_files_info = []
+if "selected_data_source" not in st.session_state:
+    st.session_state.selected_data_source = None
+
+# Initialize session state for data sources
+if "selected_files" not in st.session_state:
+    st.session_state.selected_files = []
+if "selected_tables" not in st.session_state:
+    st.session_state.selected_tables = []
+if "visualization_settings" not in st.session_state:
+    st.session_state.visualization_settings = {
+        "default_chart": "line",
+        "theme": "simple_white",
+        "colors": ["#2e4d7b", "#4CAF50", "#FFC107", "#9C27B0"]
+    }
+
+
+# BigQuery Explorer Class
+class BigQueryExplorer:
+    def __init__(self, bq_client):
+        self.client = bq_client
+        self._cache = {}
+        self.debug_info = []
+
+    def log_debug(self, message):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.debug_info.append(f"[{timestamp}] {message}")
+        logger.info(message)
+
+    def get_datasets(self):
+        if 'datasets' not in self._cache:
+            try:
+                self._cache['datasets'] = list(self.client.list_datasets())
+            except Exception as e:
+                st.error(f"Error fetching datasets: {str(e)}")
+                return []
+        return self._cache['datasets']
+
+    def get_tables(self, dataset_id):
+        cache_key = f'tables_{dataset_id}'
+        if cache_key not in self._cache:
+            try:
+                self._cache[cache_key] = list(self.client.list_tables(dataset_id))
+            except Exception as e:
+                st.error(f"Error fetching tables: {str(e)}")
+                return []
+        return self._cache[cache_key]
+
+    def get_table_schema(self, dataset_id, table_id):
+        cache_key = f'schema_{dataset_id}_{table_id}'
+        if cache_key not in self._cache:
+            try:
+                table = self.client.get_table(f"{dataset_id}.{table_id}")
+                self._cache[cache_key] = {
+                    'schema': table.schema,
+                    'num_rows': table.num_rows,
+                    'size_mb': table.num_bytes / 1024 / 1024
                 }
-        </style>
-        """)
+            except Exception as e:
+                st.error(f"Error fetching schema: {str(e)}")
+                return None
+        return self._cache[cache_key]
 
-# Initialise session state
-for session_state_var in ["file_uploaded"]:
-    if session_state_var not in st.session_state:
-        st.session_state[session_state_var] = False
+    def display_explorer(self):
+        st.sidebar.markdown("### 📊 Dataset Explorer")
+        datasets = self.get_datasets()
 
-# Moderation check
-def moderation_endpoint(text) -> bool:
-    """
-    Checks if the text is triggers the moderation endpoint
+        if not datasets:
+            st.sidebar.warning("No datasets available")
+            return
 
-    Args:
-    - text (str): The text to check
-
-    Returns:
-    - bool: True if the text is flagged
-    """
-    response = client.moderations.create(input=text)
-    return response.results[0].flagged
-
-# UI
-st.subheader("💊 AIDA - Atida Intelligent Data Assistant")
-file_upload_box = st.empty()
-upload_btn = st.empty()
-
-# Upload a file
-# File Upload
-if not st.session_state["file_uploaded"]:
-    st.session_state["files"] = file_upload_box.file_uploader("Please upload your dataset(s)",
-                                                              accept_multiple_files=True,
-                                                              type=["csv"])
-
-    if upload_btn.button("Upload"):
-
-        st.session_state["file_id"] = []
-
-        # Upload the file
-        for file in st.session_state["files"]:
-            oai_file = client.files.create(
-                file=file,
-                purpose='assistants'
-            )
-
-            # Append the file ID to the list
-            st.session_state["file_id"].append(oai_file.id)
-            print(f"Uploaded new file: \t {oai_file.id}")
-
-        st.toast("File(s) uploaded successfully", icon="🚀")
-        st.session_state["file_uploaded"] = True
-        file_upload_box.empty()
-        upload_btn.empty()
-        # The re-run is to trigger the next section of the code
-        st.rerun()
-
-if st.session_state["file_uploaded"]:
-
-    # Create a new thread
-    if "thread_id" not in st.session_state:
-        thread = client.beta.threads.create()
-        st.session_state.thread_id = thread.id
-        print(st.session_state.thread_id)
-
-    # Update the thread to attach the file
-    client.beta.threads.update(
-            thread_id=st.session_state.thread_id,
-            tool_resources={"code_interpreter": {"file_ids": [file_id for file_id in st.session_state.file_id]}}
-            )
-
-    # Local history
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    # UI
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            for item in message["items"]:
-                item_type = item["type"]
-                if item_type == "text":
-                    st.markdown(item["content"])
-                elif item_type == "image":
-                    for image in item["content"]:
-                        st.html(image)
-                elif item_type == "code_input":
-                    with st.status("Code", state="complete"):
-                        st.code(item["content"])
-                elif item_type == "code_output":
-                    with st.status("Results", state="complete"):
-                        st.code(item["content"])
-
-    if prompt := st.chat_input("Ask me a question about your dataset"):
-        if moderation_endpoint(prompt):
-            st.toast("Your message was flagged. Please try again.", icon="⚠️")
-            st.stop
-
-        st.session_state.messages.append({"role": "user",
-                                        "items": [
-                                            {"type": "text", 
-                                            "content": prompt
-                                            }]})
-        
-        client.beta.threads.messages.create(
-            thread_id=st.session_state.thread_id,
-            role="user",
-            content=prompt
+        selected_dataset = st.sidebar.selectbox(
+            "Select dataset:",
+            options=[d.dataset_id for d in datasets]
         )
 
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        if selected_dataset:
+            tables = self.get_tables(selected_dataset)
+            for table in tables:
+                with st.sidebar.expander(f"📋 {table.table_id}"):
+                    schema = self.get_table_schema(selected_dataset, table.table_id)
+                    if schema:
+                        st.markdown(f"**Rows:** {schema['num_rows']:,}")
+                        st.markdown(f"**Size:** {schema['size_mb']:.2f} MB")
+                        st.markdown("**Columns:**")
+                        for field in schema['schema']:
+                            st.markdown(f"- {field.name} ({field.field_type})")
 
-        with st.chat_message("assistant"):
-            stream = client.beta.threads.runs.create(
-                thread_id=st.session_state.thread_id,
-                assistant_id=ASSISTANT_ID,
-                tool_choice={"type": "code_interpreter"},
-                stream=True
+
+# Initialize clients and credentials
+@st.cache_resource
+def init_clients():
+    # OpenAI setup
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    assistant = client.beta.assistants.retrieve(st.secrets["ASSISTANT_ID"])
+
+    # Create initial thread
+    try:
+        thread = client.beta.threads.create()
+        st.session_state.thread_id = thread.id
+        logger.info(f"Created initial thread: {thread.id}")
+    except Exception as e:
+        logger.error(f"Error creating initial thread: {str(e)}")
+        st.error("Error initializing the assistant. Please refresh the page.")
+        st.stop()
+
+    # BigQuery setup
+    credentials = service_account.Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=["https://www.googleapis.com/auth/bigquery"]
+    )
+    bq_client = bigquery.Client(credentials=credentials)
+    bq_explorer = BigQueryExplorer(bq_client)
+
+    return client, assistant, bq_client, bq_explorer
+
+
+# Initialize clients
+openai_client, assistant, bq_client, bq_explorer = init_clients()
+
+# Sidebar
+with st.sidebar:
+    st.image("https://www.atida.com/static/version1741757720/frontend/Interactiv4/mifarmaHyva/es_ES/images/logo.svg",
+             width=200)
+    st.divider()
+
+    # Data Sources Section
+    st.markdown("### 📁 Data Sources")
+
+    # File Upload Section
+    uploaded_files = st.file_uploader(
+        "Upload dataset(s)",
+        accept_multiple_files=True,
+        type=["csv", "xlsx", "json"]
+    )
+
+    if st.button("Process Files", type="primary"):
+        with st.spinner("Processing files..."):
+            file_ids = []
+            for file in uploaded_files:
+                try:
+                    oai_file = openai_client.files.create(
+                        file=file,
+                        purpose='assistants'
+                    )
+                    file_ids.append(oai_file.id)
+
+                    st.session_state.uploaded_files_info.append({
+                        "name": file.name,
+                        "type": file.type,
+                        "size": file.size,
+                        "file_id": oai_file.id
+                    })
+                    logger.info(f"Uploaded file: {file.name} with ID: {oai_file.id}")
+                except Exception as e:
+                    st.error(f"Error uploading {file.name}: {str(e)}")
+                    continue
+
+            if file_ids:
+                try:
+                    thread = openai_client.beta.threads.create()
+                    st.session_state.thread_id = thread.id
+
+                    openai_client.beta.threads.update(
+                        thread_id=thread.id,
+                        tool_resources={"code_interpreter": {"file_ids": file_ids}}
+                    )
+
+                    st.session_state.file_uploaded = True
+                    st.toast("✅ Files processed successfully!", icon="✅")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error setting up thread: {str(e)}")
+
+    # Data Source Selection
+    st.markdown("### 🔍 Select Data Sources")
+
+    # Uploaded Files Selection
+    if st.session_state.uploaded_files_info:
+        st.markdown("#### 📄 Uploaded Files")
+        selected_files = []
+        for idx, file_info in enumerate(st.session_state.uploaded_files_info):
+            col1, col2, col3 = st.columns([0.6, 0.3, 0.1])
+            with col1:
+                is_selected = st.checkbox(
+                    file_info['name'],
+                    key=f"file_{idx}",
+                    value=file_info['file_id'] in st.session_state.selected_files
+                )
+            with col2:
+                st.text(f"{file_info['size'] / 1024:.1f} KB")
+            with col3:
+                if st.button("🗑️", key=f"delete_{idx}"):
+                    try:
+                        openai_client.files.delete(file_info['file_id'])
+                        st.session_state.uploaded_files_info.pop(idx)
+                        st.toast(f"Deleted {file_info['name']}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error deleting file: {str(e)}")
+
+            if is_selected:
+                selected_files.append(file_info['file_id'])
+
+        st.session_state.selected_files = selected_files
+
+    # BigQuery Tables Selection
+    datasets = bq_explorer.get_datasets()
+    if datasets:
+        st.markdown("#### 📊 BigQuery Tables")
+        selected_tables = []
+
+        for dataset in datasets:
+            with st.expander(f"📁 {dataset.dataset_id}"):
+                tables = bq_explorer.get_tables(dataset.dataset_id)
+                for table in tables:
+                    table_id = f"{dataset.dataset_id}.{table.table_id}"
+                    is_selected = st.checkbox(
+                        table.table_id,
+                        key=f"table_{table_id}",
+                        value=table_id in st.session_state.selected_tables
+                    )
+
+                    if is_selected:
+                        selected_tables.append(table_id)
+
+                        # Show quick preview if selected
+                        schema = bq_explorer.get_table_schema(dataset.dataset_id, table.table_id)
+                        if schema:
+                            st.markdown("**Columns:**")
+                            cols = st.columns(2)
+                            for i, field in enumerate(schema['schema']):
+                                cols[i % 2].markdown(f"- {field.name}")
+
+        st.session_state.selected_tables = selected_tables
+
+    # Visualization Settings
+    st.markdown("### 🎨 Visualization Settings")
+    with st.expander("Chart Settings"):
+        st.session_state.visualization_settings["default_chart"] = st.selectbox(
+            "Default Chart Type",
+            ["line", "bar", "area", "scatter", "plotly"],
+            index=["line", "bar", "area", "scatter", "plotly"].index(
+                st.session_state.visualization_settings["default_chart"]
             )
+        )
 
-            assistant_output = []
+        st.session_state.visualization_settings["theme"] = st.selectbox(
+            "Chart Theme",
+            ["simple_white", "plotly_dark", "plotly_white"],
+            index=["simple_white", "plotly_dark", "plotly_white"].index(
+                st.session_state.visualization_settings["theme"]
+            )
+        )
 
-            for event in stream:
-                print(event)
-                if isinstance(event, ThreadRunStepCreated):
-                    if event.data.step_details.type == "tool_calls":
-                        assistant_output.append({"type": "code_input",
-                                                "content": ""})
+    st.divider()
+    st.caption("Powered by Atida © 2024")
 
-                        code_input_expander= st.status("Writing code ⏳ ...", expanded=True)
-                        code_input_block = code_input_expander.empty()
+# Main chat interface
+st.title("💊 AIDA - Atida Intelligent Data Assistant")
+st.caption("Your pharmaceutical data analysis and visualization companion")
 
-                if isinstance(event, ThreadRunStepDelta):
-                    if event.data.delta.step_details.tool_calls[0].code_interpreter is not None:
-                        code_interpretor = event.data.delta.step_details.tool_calls[0].code_interpreter
-                        code_input_delta = code_interpretor.input
-                        if (code_input_delta is not None) and (code_input_delta != ""):
-                            assistant_output[-1]["content"] += code_input_delta
-                            code_input_block.empty()
-                            code_input_block.code(assistant_output[-1]["content"])
+# Display chat messages
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        if isinstance(message.get("content"), list):
+            for item in message["content"]:
+                if item["type"] == "text":
+                    st.markdown(item["content"])
+                elif item["type"] == "image":
+                    for image_html in item["content"]:
+                        st.html(image_html)
+                elif item["type"] == "code":
+                    with st.status(item["label"], state="complete"):
+                        st.code(item["content"])
+        else:
+            st.markdown(message["content"])
 
-                elif isinstance(event, ThreadRunStepCompleted):
-                    if isinstance(event.data.step_details, ToolCallsStepDetails):
-                        code_interpretor = event.data.step_details.tool_calls[0].code_interpreter
-                        if code_interpretor.outputs and len(code_interpretor.outputs) > 0:
-                            code_interpretor_outputs = code_interpretor.outputs[0]
-                            code_input_expander.update(label="Code", state="complete", expanded=False)
-                            # Image
-                            if isinstance(code_interpretor_outputs, CodeInterpreterOutputImage):
-                                image_html_list = []
-                                for output in code_interpretor.outputs:
-                                    image_file_id = output.image.file_id
-                                    image_data = client.files.content(image_file_id)
-                                    
-                                    # Save file
-                                    image_data_bytes = image_data.read()
-                                    with open(f"images/{image_file_id}.png", "wb") as file:
-                                        file.write(image_data_bytes)
 
-                                    # Open file and encode as data
-                                    file_ = open(f"images/{image_file_id}.png", "rb")
-                                    contents = file_.read()
-                                    data_url = base64.b64encode(contents).decode("utf-8")
-                                    file_.close()
+# Function to get context for the assistant
+def get_assistant_context():
+    context = []
 
-                                    # Display image
-                                    image_html = f'<p align="center"><img src="data:image/png;base64,{data_url}" width=600></p>'
-                                    st.html(image_html)
+    # Add selected files context
+    if st.session_state.selected_files:
+        file_names = [
+            info["name"] for info in st.session_state.uploaded_files_info
+            if info["file_id"] in st.session_state.selected_files
+        ]
+        context.append("Selected Files:\n" + "\n".join([f"- {name}" for name in file_names]))
 
-                                    image_html_list.append(image_html)
+    # Add selected tables context
+    if st.session_state.selected_tables:
+        tables_info = []
+        for table_id in st.session_state.selected_tables:
+            dataset_id, table_name = table_id.split(".")
+            schema = bq_explorer.get_table_schema(dataset_id, table_name)
+            if schema:
+                tables_info.append(
+                    f"Table: `{table_id}`\n"
+                    f"Columns: {', '.join(f.name for f in schema['schema'])}\n"
+                    f"Rows: {schema['num_rows']:,}"
+                )
+        if tables_info:
+            context.append("Selected BigQuery Tables:\n" + "\n\n".join(tables_info))
 
-                                assistant_output.append({"type": "image",
-                                                        "content": image_html_list})
-                            # Console log
-                            elif isinstance(code_interpretor_outputs, CodeInterpreterOutputLogs):
-                                assistant_output.append({"type": "code_output",
-                                                         "content": ""})
-                                code_output = code_interpretor.outputs[0].logs
-                                with st.status("Results", state="complete"):
-                                    st.code(code_output)    
-                                    assistant_output[-1]["content"] = code_output   
+    return "\n\n".join(context)
 
-                elif isinstance(event, ThreadMessageCreated):
-                    assistant_output.append({"type": "text",
-                                            "content": ""})
-                    assistant_text_box = st.empty()
 
-                elif isinstance(event, ThreadMessageDelta):
-                    if isinstance(event.data.delta.content[0], TextDeltaBlock):
-                        assistant_text_box.empty()
-                        assistant_output[-1]["content"] += event.data.delta.content[0].text.value
-                        assistant_text_box.markdown(assistant_output[-1]["content"])
-                
-            st.session_state.messages.append({"role": "assistant", "items": assistant_output})
+# Function to create visualization based on dataframe
+def create_visualization(df, chart_type=None, x=None, y=None, **kwargs):
+    if isinstance(df, str):
+        st.error(df)
+        return
+
+    try:
+        # Use default settings if not specified
+        chart_type = chart_type or st.session_state.visualization_settings["default_chart"]
+        theme = st.session_state.visualization_settings["theme"]
+        colors = st.session_state.visualization_settings["colors"]
+
+        # Convert y to list if it's not
+        y = [y] if isinstance(y, str) else y
+
+        # Create a copy of the dataframe with only the columns we need
+        plot_df = df[[x] + y].copy() if x else df[y].copy()
+
+        if chart_type == 'line':
+            st.line_chart(
+                plot_df,
+                x=x,
+                y=y,
+                use_container_width=True
+            )
+        elif chart_type == 'bar':
+            st.bar_chart(
+                plot_df,
+                x=x,
+                y=y,
+                use_container_width=True
+            )
+        elif chart_type == 'area':
+            st.area_chart(
+                plot_df,
+                x=x,
+                y=y,
+                use_container_width=True
+            )
+        elif chart_type == 'scatter':
+            st.scatter_chart(
+                plot_df,
+                x=x,
+                y=y,
+                use_container_width=True
+            )
+        elif chart_type == 'plotly':
+            fig = px.line(
+                plot_df,
+                x=x,
+                y=y,
+                template=theme,
+                color_discrete_sequence=colors,
+                **kwargs
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning(f"Chart type {chart_type} not supported")
+            st.dataframe(plot_df)
+
+    except Exception as e:
+        st.error(f"Error creating visualization: {str(e)}")
+        st.dataframe(df)
+
+
+# Function to execute BigQuery
+def execute_query(query, show_results=True):
+    try:
+        df = bq_client.query(query).to_dataframe()
+        if show_results:
+            st.markdown("#### Query Results")
+            st.dataframe(df, use_container_width=True)
+
+            # Show visualization options if data is present
+            if not df.empty:
+                with st.expander("📊 Visualization Options"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        chart_type = st.selectbox(
+                            "Chart Type",
+                            ["table", "line", "bar", "area", "scatter", "plotly"]
+                        )
+                        x_col = st.selectbox("X Axis", df.columns.tolist())
+                    with col2:
+                        y_cols = st.multiselect("Y Axis", df.columns.tolist())
+
+                    if chart_type and x_col and y_cols:
+                        create_visualization(
+                            df,
+                            chart_type=chart_type,
+                            x=x_col,
+                            y=y_cols
+                        )
+        return df
+    except Exception as e:
+        st.error(f"Error executing query: {str(e)}")
+        return None
+
+
+# Function to ensure we have a valid thread
+def ensure_thread():
+    """Ensure we have a valid thread or create a new one"""
+    try:
+        if not hasattr(st.session_state, 'thread_id') or not st.session_state.thread_id:
+            thread = openai_client.beta.threads.create()
+            st.session_state.thread_id = thread.id
+            logger.info(f"Created new thread: {thread.id}")
+            return
+
+        # Verify thread exists
+        try:
+            openai_client.beta.threads.retrieve(st.session_state.thread_id)
+        except Exception as e:
+            logger.error(f"Thread {st.session_state.thread_id} not found: {str(e)}")
+            # Create new thread if current one is invalid
+            thread = openai_client.beta.threads.create()
+            st.session_state.thread_id = thread.id
+            logger.info(f"Created replacement thread: {thread.id}")
+    except Exception as e:
+        logger.error(f"Error in ensure_thread: {str(e)}")
+        st.error("Error with assistant thread. Please refresh the page.")
+        st.stop()
+
+
+# Ensure we have a valid thread at startup
+ensure_thread()
+
+# Chat input
+if prompt := st.chat_input("Ask me about your data..."):
+    # Double check thread validity before proceeding
+    ensure_thread()
+
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        response_content = []
+        try:
+            # Check if it's a SQL query
+            if prompt.lower().strip().startswith(("select", "with")):
+                try:
+                    # Execute query directly
+                    df = bq_client.query(prompt).to_dataframe()
+
+                    # Display results
+                    st.markdown("#### Query Results")
+                    st.dataframe(df, use_container_width=True)
+
+                    # Show visualization options if data is present
+                    if not df.empty:
+                        with st.expander("📊 Visualization Options"):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                chart_type = st.selectbox(
+                                    "Chart Type",
+                                    ["table", "line", "bar", "area", "scatter", "plotly"]
+                                )
+                                x_col = st.selectbox("X Axis", df.columns.tolist())
+                            with col2:
+                                y_cols = st.multiselect("Y Axis", df.columns.tolist())
+
+                            if chart_type and x_col and y_cols:
+                                create_visualization(
+                                    df,
+                                    chart_type=chart_type,
+                                    x=x_col,
+                                    y=y_cols
+                                )
+
+                    response_content = [{"type": "text", "content": "✅ Query executed successfully!"}]
+
+                except Exception as e:
+                    error_msg = f"❌ Error executing query: {str(e)}"
+                    st.error(error_msg)
+                    response_content = [{"type": "text", "content": error_msg}]
+            else:
+                # Get context about selected data sources
+                context = get_assistant_context()
+
+                # Create message with context
+                openai_client.beta.threads.messages.create(
+                    thread_id=st.session_state.thread_id,
+                    role="user",
+                    content=f"{context}\n\nUser question: {prompt}"
+                )
+
+                # Create and stream run
+                stream = openai_client.beta.threads.runs.create(
+                    thread_id=st.session_state.thread_id,
+                    assistant_id=assistant.id,
+                    stream=True
+                )
+
+                message_placeholder = st.empty()
+                code_placeholder = st.empty()
+                result_placeholder = st.empty()
+
+                for event in stream:
+                    if isinstance(event, ThreadRunStepCreated):
+                        if event.data.step_details.type == "tool_calls":
+                            response_content.append({"type": "code", "label": "Code", "content": ""})
+                            code_placeholder = st.empty()
+
+                    elif isinstance(event, ThreadRunStepDelta):
+                        if event.data.delta.step_details and event.data.delta.step_details.tool_calls:
+                            code_interpreter = event.data.delta.step_details.tool_calls[0].code_interpreter
+                            if code_interpreter and code_interpreter.input:
+                                response_content[-1]["content"] += code_interpreter.input
+                                code_placeholder.code(response_content[-1]["content"], language="python")
+
+                    elif isinstance(event, ThreadMessageCreated):
+                        response_content.append({"type": "text", "content": ""})
+                        message_placeholder = st.empty()
+
+                    elif isinstance(event, ThreadMessageDelta):
+                        if isinstance(event.data.delta.content[0], TextDeltaBlock):
+                            text_value = event.data.delta.content[0].text.value
+                            if text_value is not None:
+                                response_content[-1]["content"] += text_value
+                                message_placeholder.markdown(response_content[-1]["content"])
+
+                    elif isinstance(event, ThreadRunStepCompleted):
+                        if isinstance(event.data.step_details, ToolCallsStepDetails):
+                            code_interpreter = event.data.step_details.tool_calls[0].code_interpreter
+
+                            # Show code being executed
+                            if code_interpreter.input:
+                                with st.expander("🔍 Code", expanded=True):
+                                    st.code(code_interpreter.input, language="python")
+
+                            if code_interpreter.outputs:
+                                for output in code_interpreter.outputs:
+                                    if isinstance(output, CodeInterpreterOutputImage):
+                                        image_data = openai_client.files.content(output.image.file_id).read()
+                                        encoded_image = base64.b64encode(image_data).decode()
+
+                                        with st.expander("📊 Visualization", expanded=True):
+                                            # Create a download button for the image
+                                            st.download_button(
+                                                label="Download Visualization",
+                                                data=image_data,
+                                                file_name="visualization.png",
+                                                mime="image/png"
+                                            )
+
+                                            # Display the image
+                                            image_html = f'<img src="data:image/png;base64,{encoded_image}" style="max-width:100%">'
+                                            st.html(image_html)
+                                            response_content.append({
+                                                "type": "image",
+                                                "content": [image_html]
+                                            })
+
+                                    elif isinstance(output, CodeInterpreterOutputLogs):
+                                        with st.expander("📝 Output", expanded=True):
+                                            st.code(output.logs)
+                                            response_content.append({
+                                                "type": "code",
+                                                "label": "Code Output",
+                                                "content": output.logs
+                                            })
+
+                                            # Try to parse output as DataFrame if it looks like tabular data
+                                            try:
+                                                if "," in output.logs and "\n" in output.logs:
+                                                    df = pd.read_csv(io.StringIO(output.logs))
+                                                    st.dataframe(df, use_container_width=True)
+
+                                                    # Offer visualization options
+                                                    with st.expander("📊 Visualization Options"):
+                                                        col1, col2 = st.columns(2)
+                                                        with col1:
+                                                            chart_type = st.selectbox(
+                                                                "Chart Type",
+                                                                ["table", "line", "bar", "area", "scatter", "plotly"],
+                                                                key=f"chart_type_{len(response_content)}"
+                                                            )
+                                                            x_col = st.selectbox(
+                                                                "X Axis",
+                                                                df.columns.tolist(),
+                                                                key=f"x_col_{len(response_content)}"
+                                                            )
+                                                        with col2:
+                                                            y_cols = st.multiselect(
+                                                                "Y Axis",
+                                                                df.columns.tolist(),
+                                                                key=f"y_cols_{len(response_content)}"
+                                                            )
+
+                                                        if chart_type and x_col and y_cols:
+                                                            create_visualization(
+                                                                df,
+                                                                chart_type=chart_type,
+                                                                x=x_col,
+                                                                y=y_cols
+                                                            )
+                                            except:
+                                                pass  # Not tabular data
+        except Exception as e:
+            logger.error(f"Error in chat interaction: {str(e)}")
+            st.error("Error communicating with the assistant. Please try again.")
+            response_content = [{"type": "text", "content": f"Lo siento, hubo un error: {str(e)}"}]
+
+        st.session_state.messages.append({"role": "assistant", "content": response_content}) 

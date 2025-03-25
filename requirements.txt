@@ -1,7 +1,10 @@
-google>=1.9.3
-google-auth>=2.29.0
-google-auth-oauthlib>=1.2.1
-googleapis-common-protos>=1.69.2
-gspread>=5.12.4
-openai>=1.68.2
-streamlit>=1.43.2
+streamlit>=1.31.0
+openai>=1.12.0
+pandas>=2.2.0
+plotly>=5.18.0
+google-cloud-bigquery>=3.14.1
+google-auth>=2.27.0
+db-dtypes>=1.2.0
+python-dotenv>=1.0.0
+openpyxl>=3.1.2  # Para soporte de archivos Excel
+numpy>=1.26.0 
