@@ -504,6 +504,71 @@ def ensure_thread():
 # Ensure we have a valid thread at startup
 ensure_thread()
 
+# Function to convert natural language to SQL
+def natural_to_sql(prompt, context):
+    """Convert natural language query to SQL using OpenAI"""
+    try:
+        logger.info(f"Converting natural language to SQL. Prompt: {prompt}")
+        logger.info(f"Context provided: {context}")
+
+        # Create a system message with the context
+        messages = [
+            {
+                "role": "system", 
+                "content": f"""You are a SQL expert that converts natural language to SQL queries.
+                You have access to the following tables and their schemas:
+
+                {context}
+
+                Convert the user's question to a SQL query. Return ONLY the raw SQL query, no markdown formatting, no backticks.
+                The query MUST:
+                - Start with SELECT or WITH
+                - Use proper BigQuery SQL syntax
+                - Use fully qualified table names (dataset.table)
+                - Use only columns that exist in the schema
+                - Be properly formatted with newlines and indentation
+                
+                If you cannot convert the question to SQL, return 'CANNOT_CONVERT'."""
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+
+        # Get SQL query from OpenAI
+        response = openai_client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=messages,
+            temperature=0
+        )
+
+        sql_query = response.choices[0].message.content.strip()
+        
+        # Log the generated query
+        logger.info(f"Generated SQL query: {sql_query}")
+        
+        # Remove markdown SQL formatting if present
+        if sql_query.startswith("```sql"):
+            sql_query = sql_query.replace("```sql", "").replace("```", "").strip()
+        elif sql_query.startswith("```"):
+            sql_query = sql_query.replace("```", "").strip()
+        
+        # Validate basic SQL structure
+        if sql_query == 'CANNOT_CONVERT':
+            logger.warning("Could not convert natural language to SQL")
+            return None
+            
+        if not sql_query.lower().strip().startswith(("select", "with")):
+            logger.error(f"Generated query doesn't start with SELECT or WITH: {sql_query}")
+            return None
+
+        return sql_query
+
+    except Exception as e:
+        logger.error(f"Error converting natural language to SQL: {str(e)}")
+        return None
+
 # Chat input
 if prompt := st.chat_input("Ask me about your data..."):
     # Double check thread validity before proceeding
@@ -516,11 +581,45 @@ if prompt := st.chat_input("Ask me about your data..."):
     with st.chat_message("assistant"):
         response_content = []
         try:
-            # Check if it's a SQL query
+            # Check if it's a SQL query or needs conversion
             if prompt.lower().strip().startswith(("select", "with")):
+                sql_query = prompt
+                should_try_sql = True
+            else:
+                # Get context about selected data sources
+                context = get_assistant_context()
+                
+                # Try to convert natural language to SQL if we have selected tables
+                if st.session_state.selected_tables:
+                    sql_query = natural_to_sql(prompt, context)
+                    should_try_sql = True
+                else:
+                    sql_query = None
+                    should_try_sql = False
+
+            # Try SQL execution first if we have a query
+            sql_success = False
+            if should_try_sql and sql_query:
                 try:
-                    # Execute query directly
-                    df = bq_client.query(prompt).to_dataframe()
+                    # Log query before execution
+                    logger.info(f"Executing SQL query: {sql_query}")
+                    
+                    # Try to validate query first
+                    try:
+                        # Dry run to check syntax
+                        job_config = bigquery.QueryJobConfig(dry_run=True)
+                        bq_client.query(sql_query, job_config=job_config)
+                        logger.info("SQL query validation passed")
+                    except Exception as e:
+                        logger.error(f"SQL query validation failed: {str(e)}")
+                        raise Exception(f"Query validation failed: {str(e)}")
+
+                    # Execute actual query
+                    df = bq_client.query(sql_query).to_dataframe()
+
+                    # Show the generated SQL
+                    if not prompt.lower().strip().startswith(("select", "with")):
+                        st.code(sql_query, language="sql", line_numbers=True)
 
                     # Display results
                     st.markdown("#### Query Results")
@@ -548,12 +647,23 @@ if prompt := st.chat_input("Ask me about your data..."):
                                 )
 
                     response_content = [{"type": "text", "content": "✅ Query executed successfully!"}]
+                    sql_success = True
 
                 except Exception as e:
-                    error_msg = f"❌ Error executing query: {str(e)}"
-                    st.error(error_msg)
-                    response_content = [{"type": "text", "content": error_msg}]
-            else:
+                    logger.error(f"Query execution error: {str(e)}")
+                    if prompt.lower().strip().startswith(("select", "with")):
+                        # Only show error for direct SQL queries
+                        error_msg = f"❌ Error executing query: {str(e)}\n\nSQL Query:\n```sql\n{sql_query}\n```"
+                        st.error(error_msg)
+                        response_content = [{"type": "text", "content": error_msg}]
+                        sql_success = False
+                    else:
+                        # For natural language queries, fallback to assistant
+                        logger.info("SQL execution failed, falling back to assistant")
+                        sql_success = False
+
+            # If SQL failed or wasn't attempted, use the assistant
+            if not sql_success:
                 # Get context about selected data sources
                 context = get_assistant_context()
 
@@ -676,6 +786,7 @@ if prompt := st.chat_input("Ask me about your data..."):
                                                             )
                                             except:
                                                 pass  # Not tabular data
+
         except Exception as e:
             logger.error(f"Error in chat interaction: {str(e)}")
             st.error("Error communicating with the assistant. Please try again.")
