@@ -26,6 +26,7 @@ from openai.types.beta.threads.runs.code_interpreter_tool_call import (
     CodeInterpreterOutputImage,
     CodeInterpreterOutputLogs
 )
+from auth import login, logout, save_chat_history, load_chat_history, get_chat_thread, delete_chat_thread
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -56,23 +57,53 @@ st.markdown("""
         padding-left: 3rem;
         padding-right: 3rem;
     }
+    .chat-thread {
+        cursor: pointer;
+        padding: 0.5rem;
+        border-radius: 0.3rem;
+        margin-bottom: 0.5rem;
+    }
+    .chat-thread:hover {
+        background-color: #e6e6e6;
+    }
     </style>
 """, unsafe_allow_html=True)
+
+# Check authentication
+if not login():
+    st.stop()
+
+# Initialize clients and credentials
+@st.cache_resource
+def init_clients():
+    # OpenAI setup
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    assistant = client.beta.assistants.retrieve(st.secrets["ASSISTANT_ID"])
+    return client, assistant
+
+# Initialize clients
+openai_client, assistant = init_clients()
 
 # Initialize session state
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hi! I'm AIDA, your intelligent data assistant. How can I help you today? 👋"}]
+        {"role": "assistant", "content": f"Hi {st.session_state.user.email}! I'm AIDA, your intelligent data assistant. How can I help you today? 👋"}]
 if "file_uploaded" not in st.session_state:
     st.session_state.file_uploaded = False
 if "thread_id" not in st.session_state:
-    st.session_state.thread_id = None
+    # Create initial thread
+    try:
+        thread = openai_client.beta.threads.create()
+        st.session_state.thread_id = thread.id
+        logger.info(f"Created initial thread: {thread.id}")
+    except Exception as e:
+        logger.error(f"Error creating initial thread: {str(e)}")
+        st.error("Error initializing the assistant. Please refresh the page.")
+        st.stop()
 if "uploaded_files_info" not in st.session_state:
     st.session_state.uploaded_files_info = []
 if "selected_data_source" not in st.session_state:
     st.session_state.selected_data_source = None
-
-# Initialize session state for data sources
 if "selected_files" not in st.session_state:
     st.session_state.selected_files = []
 if "selected_tables" not in st.session_state:
@@ -150,41 +181,50 @@ class BigQueryExplorer:
                             st.markdown(f"- {field.name} ({field.field_type})")
 
 
-# Initialize clients and credentials
-@st.cache_resource
-def init_clients():
-    # OpenAI setup
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    assistant = client.beta.assistants.retrieve(st.secrets["ASSISTANT_ID"])
-
-    # Create initial thread
-    try:
-        thread = client.beta.threads.create()
-        st.session_state.thread_id = thread.id
-        logger.info(f"Created initial thread: {thread.id}")
-    except Exception as e:
-        logger.error(f"Error creating initial thread: {str(e)}")
-        st.error("Error initializing the assistant. Please refresh the page.")
-        st.stop()
-
-    # BigQuery setup
-    credentials = service_account.Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=["https://www.googleapis.com/auth/bigquery"]
-    )
-    bq_client = bigquery.Client(credentials=credentials)
-    bq_explorer = BigQueryExplorer(bq_client)
-
-    return client, assistant, bq_client, bq_explorer
-
-
-# Initialize clients
-openai_client, assistant, bq_client, bq_explorer = init_clients()
-
 # Sidebar
 with st.sidebar:
     st.image("https://www.atida.com/static/version1741757720/frontend/Interactiv4/mifarmaHyva/es_ES/images/logo.svg",
              width=200)
+    logout()
+    st.divider()
+
+    # Chat History Section
+    st.markdown("### 💬 Chat History")
+    
+    # New Chat button
+    if st.button("🆕 New Chat", type="primary", use_container_width=True):
+        # Create new thread
+        try:
+            thread = openai_client.beta.threads.create()
+            st.session_state.thread_id = thread.id
+            logger.info(f"Created new thread: {thread.id}")
+            st.session_state.messages = [
+                {"role": "assistant", "content": f"Hi {st.session_state.user.email}! I'm AIDA, your intelligent data assistant. How can I help you today? 👋"}]
+            st.rerun()
+        except Exception as e:
+            logger.error(f"Error creating new thread: {str(e)}")
+            st.error("Error creating new chat. Please try again.")
+    
+    # Load chat history
+    chat_history = load_chat_history(st.session_state.user.id)
+    
+    for chat in chat_history:
+        col1, col2 = st.columns([0.8, 0.2])
+        with col1:
+            if st.button(f"📝 {chat['title']}", key=f"chat_{chat['thread_id']}", use_container_width=True):
+                st.session_state.messages = chat['messages']
+                st.session_state.thread_id = chat['thread_id']
+                st.rerun()
+        with col2:
+            if st.button("🗑️", key=f"delete_{chat['thread_id']}"):
+                if delete_chat_thread(chat['thread_id']):
+                    st.toast("Chat deleted successfully!")
+                    if st.session_state.thread_id == chat['thread_id']:
+                        st.session_state.messages = [
+                            {"role": "assistant", "content": f"Hi {st.session_state.user.email}! I'm AIDA, your intelligent data assistant. How can I help you today? 👋"}]
+                        st.session_state.thread_id = None
+                    st.rerun()
+    
     st.divider()
 
     # Data Sources Section
@@ -268,6 +308,11 @@ with st.sidebar:
         st.session_state.selected_files = selected_files
 
     # BigQuery Tables Selection
+    bq_client = bigquery.Client(credentials=service_account.Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=["https://www.googleapis.com/auth/bigquery"]
+    ))
+    bq_explorer = BigQueryExplorer(bq_client)
     datasets = bq_explorer.get_datasets()
     if datasets:
         st.markdown("#### 📊 BigQuery Tables")
@@ -386,20 +431,39 @@ def ensure_thread():
     """Ensure we have a valid thread or create a new one"""
     try:
         if not hasattr(st.session_state, 'thread_id') or not st.session_state.thread_id:
+            logger.info("Creating new thread - no thread_id in session")
             thread = openai_client.beta.threads.create()
             st.session_state.thread_id = thread.id
             logger.info(f"Created new thread: {thread.id}")
+            
+            # Save initial message
+            save_chat_history(
+                user_id=None,
+                thread_id=thread.id,
+                messages=st.session_state.messages,
+                title="New Chat"
+            )
             return
 
         # Verify thread exists
         try:
+            logger.info(f"Verifying thread: {st.session_state.thread_id}")
             openai_client.beta.threads.retrieve(st.session_state.thread_id)
+            logger.info("Thread verified successfully")
         except Exception as e:
             logger.error(f"Thread {st.session_state.thread_id} not found: {str(e)}")
             # Create new thread if current one is invalid
             thread = openai_client.beta.threads.create()
             st.session_state.thread_id = thread.id
             logger.info(f"Created replacement thread: {thread.id}")
+            
+            # Save initial message
+            save_chat_history(
+                user_id=None,
+                thread_id=thread.id,
+                messages=st.session_state.messages,
+                title="New Chat"
+            )
     except Exception as e:
         logger.error(f"Error in ensure_thread: {str(e)}")
         st.error("Error with assistant thread. Please refresh the page.")
@@ -640,9 +704,17 @@ if prompt := st.chat_input("Ask me about your data..."):
                                             except:
                                                 pass  # Not tabular data
 
+            st.session_state.messages.append({"role": "assistant", "content": response_content})
+            
+            # Save chat history after adding assistant's response
+            save_chat_history(
+                user_id=None,  # Not needed anymore, using session user
+                thread_id=st.session_state.thread_id,
+                messages=st.session_state.messages
+            )
+
         except Exception as e:
             logger.error(f"Error in chat interaction: {str(e)}")
             st.error("Error communicating with the assistant. Please try again.")
             response_content = [{"type": "text", "content": f"Lo siento, hubo un error: {str(e)}"}]
-
-        st.session_state.messages.append({"role": "assistant", "content": response_content}) 
+            st.session_state.messages.append({"role": "assistant", "content": response_content}) 

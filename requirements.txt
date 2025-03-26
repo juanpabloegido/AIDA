@@ -7,4 +7,6 @@ google-auth>=2.27.0
 db-dtypes>=1.2.0
 python-dotenv>=1.0.0
 openpyxl>=3.1.2  # Para soporte de archivos Excel
-numpy>=1.26.0 
+numpy>=1.26.0
+altair>=5.2.0
+supabase-py>=2.3.4 
