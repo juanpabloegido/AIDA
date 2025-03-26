@@ -53,6 +53,7 @@ streamlit run chat_app.py
 - [ ] Secure file upload handling
 
 ### Chat Interface
+- [ ] Tables should not disappear from the chat while a message is being typed.
 - [ ] Add stop/cancel button for ongoing chat responses
 - [ ] Implement up arrow functionality to reload last message
 - [ ] Add message editing capabilities
