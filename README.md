@@ -26,6 +26,8 @@ AIDA is a specialized AI assistant for Atida pharmaceutical company, built using
 - Automatic error handling and recovery
 - Context-aware responses
 - Support for multiple data sources simultaneously
+- Persistent chat history with automatic saving
+- Chat thread management (create, load, delete)
 
 ## Quick Start
 
@@ -49,7 +51,7 @@ streamlit run chat_app.py
 ### Authentication & Security
 - [ ] Add user authentication system
 - [ ] Implement role-based access control
-- [ ] Add session management
+- [x] Add session management
 - [ ] Secure file upload handling
 
 ### Chat Interface
