@@ -102,12 +102,6 @@ if "thread_id" not in st.session_state:
         st.stop()
 if "uploaded_files_info" not in st.session_state:
     st.session_state.uploaded_files_info = []
-if "selected_data_source" not in st.session_state:
-    st.session_state.selected_data_source = None
-if "selected_files" not in st.session_state:
-    st.session_state.selected_files = []
-if "selected_tables" not in st.session_state:
-    st.session_state.selected_tables = []
 
 # BigQuery Explorer Class
 class BigQueryExplorer:
@@ -147,8 +141,8 @@ class BigQueryExplorer:
                 table = self.client.get_table(f"{dataset_id}.{table_id}")
                 self._cache[cache_key] = {
                     'schema': table.schema,
-                    'num_rows': table.num_rows,
-                    'size_mb': table.num_bytes / 1024 / 1024
+                    'size_mb': table.num_bytes / 1024 / 1024,
+                    'description': table.description or 'No description available'
                 }
             except Exception as e:
                 st.error(f"Error fetching schema: {str(e)}")
@@ -174,7 +168,7 @@ class BigQueryExplorer:
                 with st.sidebar.expander(f"📋 {table.table_id}"):
                     schema = self.get_table_schema(selected_dataset, table.table_id)
                     if schema:
-                        st.markdown(f"**Rows:** {schema['num_rows']:,}")
+                        st.markdown(f"**Description:** {schema['description']}")
                         st.markdown(f"**Size:** {schema['size_mb']:.2f} MB")
                         st.markdown("**Columns:**")
                         for field in schema['schema']:
@@ -230,6 +224,16 @@ with st.sidebar:
     # Data Sources Section
     st.markdown("### 📁 Data Sources")
 
+    # Query Limit Control
+    query_limit = st.number_input(
+        "Max rows per query",
+        min_value=1,
+        max_value=100000,
+        value=st.session_state.get('query_limit', 1000),
+        help="Maximum number of rows to return in query results"
+    )
+    st.session_state.query_limit = query_limit
+
     # File Upload Section
     uploaded_files = st.file_uploader(
         "Upload dataset(s)",
@@ -275,21 +279,13 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Error setting up thread: {str(e)}")
 
-    # Data Source Selection
-    st.markdown("### 🔍 Select Data Sources")
-
-    # Uploaded Files Selection
+    # Show uploaded files
     if st.session_state.uploaded_files_info:
         st.markdown("#### 📄 Uploaded Files")
-        selected_files = []
         for idx, file_info in enumerate(st.session_state.uploaded_files_info):
             col1, col2, col3 = st.columns([0.6, 0.3, 0.1])
             with col1:
-                is_selected = st.checkbox(
-                    file_info['name'],
-                    key=f"file_{idx}",
-                    value=file_info['file_id'] in st.session_state.selected_files
-                )
+                st.text(file_info['name'])
             with col2:
                 st.text(f"{file_info['size'] / 1024:.1f} KB")
             with col3:
@@ -302,12 +298,7 @@ with st.sidebar:
                     except Exception as e:
                         st.error(f"Error deleting file: {str(e)}")
 
-            if is_selected:
-                selected_files.append(file_info['file_id'])
-
-        st.session_state.selected_files = selected_files
-
-    # BigQuery Tables Selection
+    # BigQuery Tables Section
     bq_client = bigquery.Client(credentials=service_account.Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
         scopes=["https://www.googleapis.com/auth/bigquery"]
@@ -315,39 +306,19 @@ with st.sidebar:
     bq_explorer = BigQueryExplorer(bq_client)
     datasets = bq_explorer.get_datasets()
     if datasets:
-        st.markdown("#### 📊 BigQuery Tables")
-        selected_tables = []
-
+        st.markdown("#### 📊 Datamars")
         for dataset in datasets:
             with st.expander(f"📁 {dataset.dataset_id}"):
                 tables = bq_explorer.get_tables(dataset.dataset_id)
                 for table in tables:
-                    table_id = f"{dataset.dataset_id}.{table.table_id}"
-                    is_selected = st.checkbox(
-                        table.table_id,
-                        key=f"table_{table_id}",
-                        value=table_id in st.session_state.selected_tables
-                    )
-
-                    if is_selected:
-                        selected_tables.append(table_id)
-
-                        # Show quick preview if selected
-                        schema = bq_explorer.get_table_schema(dataset.dataset_id, table.table_id)
-                        if schema:
-                            st.markdown("**Columns:**")
-                            cols = st.columns(2)
-                            for i, field in enumerate(schema['schema']):
-                                cols[i % 2].markdown(f"- {field.name}")
-
-        st.session_state.selected_tables = selected_tables
+                    st.text(table.table_id)
 
     st.divider()
     st.caption("Powered by Atida © 2025")
 
 # Main chat interface
 st.title("💊 AIDA - Atida Intelligent Data Assistant")
-st.caption("Your pharmaceutical data analysis and visualization companion")
+st.caption("Your smart partner in pharmaceutical data insights")
 
 # Display chat messages
 for message in st.session_state.messages:
@@ -370,56 +341,119 @@ for message in st.session_state.messages:
 def get_assistant_context():
     context = []
 
-    # Add selected files context
-    if st.session_state.selected_files:
+    # Add all files context
+    if st.session_state.uploaded_files_info:
         file_info = []
         for info in st.session_state.uploaded_files_info:
-            if info["file_id"] in st.session_state.selected_files:
-                file_info.append(
-                    f"- {info['name']} (ID: {info['file_id']}, Type: {info['type']})\n"
-                    f"  Access path: /mnt/data/{info['file_id']}"
-                )
+            file_info.append(
+                f"- {info['name']} (ID: {info['file_id']}, Type: {info['type']})\n"
+                f"  Access path: /mnt/data/{info['file_id']}"
+            )
         if file_info:
-            context.append("Selected Files:\n" + "\n".join(file_info))
+            context.append("Available Files:\n" + "\n".join(file_info))
 
-    # Add selected tables context
-    if st.session_state.selected_tables:
+    # Add all tables context
+    datasets = bq_explorer.get_datasets()
+    if datasets:
         tables_info = []
-        for table_id in st.session_state.selected_tables:
-            dataset_id, table_name = table_id.split(".")
-            schema = bq_explorer.get_table_schema(dataset_id, table_name)
-            if schema:
-                tables_info.append(
-                    f"Table: `{table_id}`\n"
-                    f"Columns: {', '.join(f.name for f in schema['schema'])}\n"
-                    f"Rows: {schema['num_rows']:,}"
-                )
+        for dataset in datasets:
+            tables = bq_explorer.get_tables(dataset.dataset_id)
+            for table in tables:
+                table_id = f"{dataset.dataset_id}.{table.table_id}"
+                schema = bq_explorer.get_table_schema(dataset.dataset_id, table.table_id)
+                if schema:
+                    fields_info = []
+                    for field in schema['schema']:
+                        desc = field.description or 'No description'
+                        fields_info.append(f"{field.name} ({field.field_type}): {desc}")
+                    
+                    tables_info.append(
+                        f"Table: `{table_id}`\n"
+                        f"Description: {schema['description']}\n"
+                        f"Columns:\n" + "\n".join(f"- {field}" for field in fields_info) + f"\n"
+                    )
         if tables_info:
-            context.append("Selected BigQuery Tables:\n" + "\n\n".join(tables_info))
+            context.append("Available BigQuery Tables:\n" + "\n\n".join(tables_info))
 
     return "\n\n".join(context)
 
 
 # Function to create visualization based on dataframe
-def display_dataframe(df, title="Results"):
+def display_dataframe(df, title="Results", query=None):
     """Display a dataframe in a consistent format"""
     if isinstance(df, str):
         st.error(df)
         return
 
     try:
-        st.markdown(f"#### {title}")
+        content = []
+        
+        # Add title and query as text content
+        text_content = f"#### {title}\n"
+        if query:
+            text_content += f"**Query:**\n```sql\n{query}\n```\n"
+        content.append({"type": "text", "content": text_content})
+        
+        # Display DataFrame in UI
+        st.markdown(text_content)
         st.dataframe(df, use_container_width=True)
+        
+        # Add DataFrame to content for Streamlit history
+        content.append({
+            "type": "dataframe", 
+            "content": {
+                "records": df.to_dict('records'),
+                "columns": df.columns.tolist(),
+                "dtypes": df.dtypes.astype(str).to_dict()
+            }
+        })
+        
+        # Convert to string for AIDA thread
+        df_string = df.to_string(index=False)
+        
+        # Add to thread for AIDA
+        openai_client.beta.threads.messages.create(
+            thread_id=st.session_state.thread_id,
+            role="user",
+            content=f"{text_content}\n```\n{df_string}\n```"
+        )
+        logger.info("DataFrame content added to thread as text")
+        
+        # Add to message history without saving to database
+        st.session_state.messages.append({"role": "assistant", "content": content})
+        
+        # Show success message
+        st.caption("✅ Query executed successfully!")
+
     except Exception as e:
+        logger.error(f"Error in display_dataframe: {str(e)}")
         st.error(f"Error displaying dataframe: {str(e)}")
+        return None
+
+    return content
 
 
 # Function to execute BigQuery
 def execute_query(query, show_results=True):
     try:
+        # Add LIMIT clause if not present
+        query = query.strip()
+        if not query.lower().endswith('limit'):  # Handle cases where query ends with LIMIT but no number
+            if 'limit' not in query.lower():
+                query = f"{query}\nLIMIT {st.session_state.get('query_limit', 1000)}"
+            else:
+                # Find the LIMIT clause and validate/adjust its value
+                parts = query.lower().split('limit')
+                try:
+                    current_limit = int(parts[-1].strip())
+                    if current_limit > st.session_state.get('query_limit', 1000):
+                        query = f"{parts[0]} LIMIT {st.session_state.get('query_limit', 1000)}"
+                except ValueError:
+                    query = f"{query}\nLIMIT {st.session_state.get('query_limit', 1000)}"
+
         df = bq_client.query(query).to_dataframe()
         if show_results:
-            display_dataframe(df, "Query Results")
+            display_dataframe(df, "Query Results", query)
         return df
     except Exception as e:
         st.error(f"Error executing query: {str(e)}")
@@ -557,14 +591,8 @@ if prompt := st.chat_input("Ask me about your data..."):
             else:
                 # Get context about selected data sources
                 context = get_assistant_context()
-                
-                # Try to convert natural language to SQL if we have selected tables
-                if st.session_state.selected_tables:
-                    sql_query = natural_to_sql(prompt, context)
-                    should_try_sql = True
-                else:
-                    sql_query = None
-                    should_try_sql = False
+                sql_query = natural_to_sql(prompt, context)
+                should_try_sql = bool(sql_query)
 
             # Try SQL execution first if we have a query
             sql_success = False
@@ -591,9 +619,13 @@ if prompt := st.chat_input("Ask me about your data..."):
                         st.code(sql_query, language="sql", line_numbers=True)
 
                     # Display results
-                    display_dataframe(df, "Query Results")
-                    response_content = [{"type": "text", "content": "✅ Query executed successfully!"}]
+                    display_dataframe(df, "Query Results", sql_query)
                     sql_success = True
+
+                    # Create simplified version for storage
+                    storage_content = [
+                        {"type": "text", "content": f"Query executed:\n```sql\n{sql_query}\n```"}
+                    ]
 
                 except Exception as e:
                     logger.error(f"Query execution error: {str(e)}")
@@ -602,6 +634,7 @@ if prompt := st.chat_input("Ask me about your data..."):
                         error_msg = f"❌ Error executing query: {str(e)}\n\nSQL Query:\n```sql\n{sql_query}\n```"
                         st.error(error_msg)
                         response_content = [{"type": "text", "content": error_msg}]
+                        storage_content = response_content
                         sql_success = False
                     else:
                         # For natural language queries, fallback to assistant
@@ -661,7 +694,7 @@ if prompt := st.chat_input("Ask me about your data..."):
 
                             # Show code being executed
                             if code_interpreter.input:
-                                with st.expander("🔍 Code", expanded=True):
+                                with st.expander("🔍 Code", expanded=False):
                                     st.code(code_interpreter.input, language="python")
 
                             if code_interpreter.outputs:
@@ -688,7 +721,7 @@ if prompt := st.chat_input("Ask me about your data..."):
                                             })
 
                                     elif isinstance(output, CodeInterpreterOutputLogs):
-                                        with st.expander("📝 Output", expanded=True):
+                                        with st.expander("📝 Output", expanded=False):
                                             st.code(output.logs)
                                             response_content.append({
                                                 "type": "code",
@@ -700,17 +733,37 @@ if prompt := st.chat_input("Ask me about your data..."):
                                             try:
                                                 if "," in output.logs and "\n" in output.logs:
                                                     df = pd.read_csv(io.StringIO(output.logs))
-                                                    display_dataframe(df, "Data Preview")
+                                                    display_dataframe(df, "Data Preview", sql_query)
                                             except:
                                                 pass  # Not tabular data
 
+                # Create simplified version for storage
+                storage_content = []
+                for item in response_content:
+                    if item["type"] in ["text", "code"]:
+                        storage_content.append(item)
+
+            # Update session state with full content for display
             st.session_state.messages.append({"role": "assistant", "content": response_content})
             
-            # Save chat history after adding assistant's response
+            # Save simplified version to database
+            storage_messages = []
+            for msg in st.session_state.messages:
+                if isinstance(msg.get("content"), list):
+                    # Filter out dataframes and images, keep only text and code
+                    filtered_content = []
+                    for item in msg["content"]:
+                        if item["type"] in ["text", "code"]:
+                            filtered_content.append(item)
+                    storage_messages.append({"role": msg["role"], "content": filtered_content})
+                else:
+                    storage_messages.append(msg)
+                    
             save_chat_history(
-                user_id=None,  # Not needed anymore, using session user
+                user_id=None,
                 thread_id=st.session_state.thread_id,
-                messages=st.session_state.messages
+                messages=storage_messages,
+                title=prompt[:50] + "..." if len(prompt) > 50 else prompt
             )
 
         except Exception as e:
