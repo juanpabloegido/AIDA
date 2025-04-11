@@ -11,6 +11,7 @@ import streamlit as st
 from openai import OpenAI
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from google.cloud import bigquery
 from google.oauth2 import service_account
 from openai.types.beta.assistant_stream_event import (
@@ -320,6 +321,28 @@ with st.sidebar:
 st.title("💊 AIDA - Atida Intelligent Data Assistant")
 st.caption("Your smart partner in pharmaceutical data insights")
 
+# Add Tips section
+with st.expander("💡 Tips", expanded=False):
+    st.markdown("""
+    ### How to use AIDA
+    
+    **Ask questions about your data:**
+    - Query your data with natural language: "Show me sales trends for the last quarter"
+    - Write SQL directly: "SELECT * FROM dataset.table WHERE date > '2023-01-01'"
+    
+    **Create visualizations:**
+    - Ask for plots using natural language: "Create a bar chart of sales by region"
+    - Request specific chart types: "Plot a histogram of patient ages"
+    - Visualize query results: "Show me a pie chart of market share by product"
+    
+    **Data analysis:**
+    - Get statistical insights: "Calculate summary statistics for this dataset"
+    - Find patterns: "Identify trends in prescription data over time"
+    - Compare data: "Compare sales performance across different regions"
+    
+    **Pro tip:** Upload your CSV/Excel files or connect to BigQuery to analyze your data.
+    """)
+
 # Display chat messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -333,6 +356,18 @@ for message in st.session_state.messages:
                 elif item["type"] == "code":
                     with st.status(item["label"], state="complete"):
                         st.code(item["content"])
+                elif item["type"] == "dataframe":
+                    # Reconstruct DataFrame from serialized format
+                    df_dict = item["content"]
+                    df = pd.DataFrame(df_dict["records"], columns=df_dict["columns"])
+                    # Convert back to original dtypes if available
+                    if "dtypes" in df_dict:
+                        for col, dtype in df_dict["dtypes"].items():
+                            try:
+                                df[col] = df[col].astype(dtype)
+                            except:
+                                pass  # Keep original dtype if conversion fails
+                    st.dataframe(df, use_container_width=True)
         else:
             st.markdown(message["content"])
 
@@ -408,16 +443,24 @@ def display_dataframe(df, title="Results", query=None):
             }
         })
         
-        # Convert to string for AIDA thread
-        df_string = df.to_string(index=False)
+        # Convert to string for AIDA thread, limit the size
+        max_rows = min(100, len(df))  # Show at most 100 rows in the thread
+        df_preview = df.head(max_rows)
+        df_string = df_preview.to_string(index=False)
+        if len(df) > max_rows:
+            df_string += f"\n\n... and {len(df) - max_rows} more rows"
         
-        # Add to thread for AIDA
+        # Add to thread for AIDA with size limit
+        thread_content = f"{text_content}\n```\n{df_string}\n```"
+        if len(thread_content) > 200000:  # Safe limit for OpenAI
+            thread_content = thread_content[:200000] + "\n...(truncated)"
+        
         openai_client.beta.threads.messages.create(
             thread_id=st.session_state.thread_id,
             role="user",
-            content=f"{text_content}\n```\n{df_string}\n```"
+            content=thread_content
         )
-        logger.info("DataFrame content added to thread as text")
+        logger.info(f"DataFrame preview ({max_rows} rows) added to thread as text")
         
         # Add to message history without saving to database
         st.session_state.messages.append({"role": "assistant", "content": content})
@@ -438,19 +481,23 @@ def execute_query(query, show_results=True):
     try:
         # Add LIMIT clause if not present
         query = query.strip()
-        if not query.lower().endswith('limit'):  # Handle cases where query ends with LIMIT but no number
-            if 'limit' not in query.lower():
-                query = f"{query}\nLIMIT {st.session_state.get('query_limit', 1000)}"
-            else:
-                # Find the LIMIT clause and validate/adjust its value
-                parts = query.lower().split('limit')
-                try:
-                    current_limit = int(parts[-1].strip())
-                    if current_limit > st.session_state.get('query_limit', 1000):
-                        query = f"{parts[0]} LIMIT {st.session_state.get('query_limit', 1000)}"
-                except ValueError:
-                    query = f"{query}\nLIMIT {st.session_state.get('query_limit', 1000)}"
-
+        limit = st.session_state.get('query_limit', 1000)
+        
+        # Remove any existing LIMIT clause
+        query_lower = query.lower()
+        if 'limit' in query_lower:
+            # Remove everything from LIMIT onwards
+            query = query[:query_lower.find('limit')].strip()
+        
+        # Add our controlled LIMIT
+        query = f"{query}\nLIMIT {limit}"
+        
+        # Execute with dry run first to validate
+        job_config = bigquery.QueryJobConfig(dry_run=True)
+        bq_client.query(query, job_config=job_config)
+        logger.info("SQL query validation passed")
+        
+        # Execute actual query
         df = bq_client.query(query).to_dataframe()
         if show_results:
             display_dataframe(df, "Query Results", query)
