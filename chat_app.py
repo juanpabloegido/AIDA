@@ -11,7 +11,9 @@ import streamlit as st
 from openai import OpenAI
 import pandas as pd
 import plotly.express as px
+import plotly.io as pio
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from google.cloud import bigquery
 from google.oauth2 import service_account
 from openai.types.beta.assistant_stream_event import (
@@ -275,7 +277,7 @@ with st.sidebar:
                     )
 
                     st.session_state.file_uploaded = True
-                    st.toast("✅ Files processed successfully!", icon="✅")
+                    st.toast("Files processed successfully!", icon="✅")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error setting up thread: {str(e)}")
@@ -340,7 +342,7 @@ with st.expander("💡 Tips", expanded=False):
     - Find patterns: "Identify trends in prescription data over time"
     - Compare data: "Compare sales performance across different regions"
     
-    **Pro tip:** Upload your CSV/Excel files or connect to BigQuery to analyze your data.
+    **Pro tip:** Upload your CSV/Excel files or use Datamars query to analyze your data.
     """)
 
 # Display chat messages
